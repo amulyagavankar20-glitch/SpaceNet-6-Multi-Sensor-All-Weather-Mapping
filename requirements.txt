@@ -1,0 +1,28 @@
+# Core (notebook + training)
+torch==2.5.1
+torchvision==0.20.1
+numpy==2.2.6
+pandas==2.3.3
+rasterio==1.4.4
+matplotlib==3.10.8
+Pillow==12.1.1
+scipy==1.15.3
+scikit-learn==1.7.2
+
+# Optional preprocessing / geometry dependencies
+# albumentations==1.4.21
+# opencv-python==4.10.0.84
+# Shapely==2.0.6
+
+# Inference API
+fastapi==0.141.1
+uvicorn==0.49.0
+python-multipart==0.0.32
+
+# Streamlit UI
+streamlit==1.56.0
+requests==2.33.1
+
+# Notebooks
+notebook==7.5.5
+ipykernel==7.2.0
