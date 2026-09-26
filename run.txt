@@ -1,0 +1,17 @@
+Now run it
+
+Terminal 1 — FastAPI
+
+python -m uvicorn api.main:app --reload
+
+You should have:
+
+http://127.0.0.1:8000
+
+Terminal 2 — Streamlit
+
+python -m streamlit run app/streamlit_app.py
+
+Then open:
+
+http://localhost:8501
