@@ -1,0 +1,2 @@
+epoch,best_val_dice,best_val_iou,test_loss,test_dice,test_iou,test_precision,test_recall
+56,0.7026668936014175,0.5482821483165026,0.4599,0.707,0.5627,0.7342,0.6931

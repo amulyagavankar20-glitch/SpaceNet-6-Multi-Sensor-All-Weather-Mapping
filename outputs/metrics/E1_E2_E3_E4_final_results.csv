@@ -1,0 +1,5 @@
+Experiment,Input,Test_Dice,Test_IoU,Precision,Recall
+E1,SAR,0.4258,0.2806,0.4411,0.4513
+E2,SAR,0.6745,0.5235,0.7046,0.6661
+E3,Optical,0.8574,0.7548,0.8793,0.8403
+E4,SAR + Optical KD,0.707,0.5627,0.7342,0.6931

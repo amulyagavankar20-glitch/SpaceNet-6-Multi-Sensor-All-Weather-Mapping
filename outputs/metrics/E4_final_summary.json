@@ -1,0 +1,31 @@
+{
+    "experiment": "E4",
+    "student": "SAR",
+    "teacher": "Optical",
+    "inference_input": "SAR only",
+    "knowledge_distillation": {
+        "temperature": 4.0,
+        "response_weight": 0.1,
+        "feature_weight": 0.1,
+        "warmup_epochs": 6
+    },
+    "checkpoint": "outputs\\checkpoints\\E4_SAR_KD_best.pth",
+    "best_epoch": 56,
+    "validation": {
+        "dice": 0.7026668936014175,
+        "iou": 0.5482821483165026
+    },
+    "test": {
+        "loss": 0.4599,
+        "dice": 0.707,
+        "iou": 0.5627,
+        "precision": 0.7342,
+        "recall": 0.6931
+    },
+    "comparison_with_e2": {
+        "e2_test_dice": 0.6745,
+        "e2_test_iou": 0.5235,
+        "dice_improvement": 0.0325,
+        "iou_improvement": 0.0392
+    }
+}
