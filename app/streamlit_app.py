@@ -1,46 +1,31 @@
 import base64
-from io import BytesIO
-
-import numpy as np
-import rasterio
+import io
 import requests
 import streamlit as st
 from PIL import Image
 
 
-# ============================================================
-# CONFIG
-# ============================================================
-
 API_URL = "http://127.0.0.1:8000"
 
 MODEL_INFO = {
     "E1": {
-        "name": "E1 - Plain U-Net",
-        "modality": "SAR",
-        "description": "Baseline SAR-only U-Net",
+        "name": "E1 - SAR U-Net",
+        "input": "SAR",
     },
     "E2": {
-        "name": "E2 - ResNet34 U-Net",
-        "modality": "SAR",
-        "description": "ResNet34 encoder + U-Net decoder",
+        "name": "E2 - SAR ResNet34-U-Net",
+        "input": "SAR",
     },
     "E3": {
         "name": "E3 - Optical Teacher",
-        "modality": "Optical",
-        "description": "Optical-only teacher model",
+        "input": "Optical",
     },
     "E4": {
         "name": "E4 - SAR + Knowledge Distillation",
-        "modality": "SAR",
-        "description": "SAR-only student trained using optical knowledge",
+        "input": "SAR",
     },
 }
 
-
-# ============================================================
-# PAGE CONFIG
-# ============================================================
 
 st.set_page_config(
     page_title="SpaceNet 6 Building Extraction",
@@ -50,143 +35,39 @@ st.set_page_config(
 
 
 # ============================================================
-# HELPER FUNCTIONS
+# HELPERS
 # ============================================================
 
-def decode_image(base64_string):
-    """Decode Base64 PNG returned by FastAPI."""
-    image_bytes = base64.b64decode(base64_string)
-    return Image.open(BytesIO(image_bytes))
+def decode_base64_image(encoded):
+    return Image.open(
+        io.BytesIO(base64.b64decode(encoded))
+    )
 
 
-def normalize_channel(channel):
-    """Normalize a channel to uint8 for visualization."""
-    channel = channel.astype(np.float32)
-
-    valid = np.isfinite(channel)
-
-    if not np.any(valid):
-        return np.zeros(channel.shape, dtype=np.uint8)
-
-    values = channel[valid]
-
-    p2 = np.percentile(values, 2)
-    p98 = np.percentile(values, 98)
-
-    if p98 <= p2:
-        return np.zeros(channel.shape, dtype=np.uint8)
-
-    channel = np.clip(channel, p2, p98)
-    channel = (channel - p2) / (p98 - p2)
-
-    return (channel * 255).astype(np.uint8)
-
-
-def create_input_preview(file_bytes, modality):
-    """
-    Create a displayable 512x512 preview from the uploaded GeoTIFF.
-    This is only for visualization; actual preprocessing is done by API.
-    """
-
-    with rasterio.MemoryFile(file_bytes) as memfile:
-        with memfile.open() as src:
-
-            data = src.read()
-
-    # Center crop to match model inference
-    _, height, width = data.shape
-
-    crop_size = 512
-
-    top = max((height - crop_size) // 2, 0)
-    left = max((width - crop_size) // 2, 0)
-
-    data = data[
-        :,
-        top:top + crop_size,
-        left:left + crop_size
-    ]
-
-    if modality == "Optical":
-
-        # Optical has 4 channels.
-        # Display first 3 channels as RGB.
-        if data.shape[0] >= 3:
-            rgb = np.stack(
-                [
-                    normalize_channel(data[0]),
-                    normalize_channel(data[1]),
-                    normalize_channel(data[2]),
-                ],
-                axis=-1,
-            )
-        else:
-            rgb = normalize_channel(data[0])
-
-        return Image.fromarray(rgb)
-
-    else:
-
-        # SAR is not RGB.
-        # Display first SAR channel as grayscale.
-        sar = normalize_channel(data[0])
-
-        return Image.fromarray(sar)
-
-
-def create_mask_preview(file_bytes):
-
-    with rasterio.MemoryFile(file_bytes) as memfile:
-        with memfile.open() as src:
-            mask = src.read(1)
-
-    height, width = mask.shape
-
-    crop_size = 512
-
-    top = max((height - crop_size) // 2, 0)
-    left = max((width - crop_size) // 2, 0)
-
-    mask = mask[
-        top:top + crop_size,
-        left:left + crop_size
-    ]
-
-    mask = np.where(mask > 0, 255, 0).astype(np.uint8)
-
-    return Image.fromarray(mask)
-
-
-def run_prediction(
-    model,
-    sar_bytes=None,
-    sar_name=None,
-    optical_bytes=None,
-    optical_name=None,
-    gt_bytes=None,
-    gt_name=None,
-):
-
+def call_prediction(model, sar_file=None, optical_file=None, gt_file=None):
     files = {}
 
-    if sar_bytes is not None:
+    if sar_file is not None:
+        sar_file.seek(0)
         files["sar_image"] = (
-            sar_name,
-            sar_bytes,
+            sar_file.name,
+            sar_file,
             "image/tiff",
         )
 
-    if optical_bytes is not None:
+    if optical_file is not None:
+        optical_file.seek(0)
         files["optical_image"] = (
-            optical_name,
-            optical_bytes,
+            optical_file.name,
+            optical_file,
             "image/tiff",
         )
 
-    if gt_bytes is not None:
+    if gt_file is not None:
+        gt_file.seek(0)
         files["ground_truth"] = (
-            gt_name,
-            gt_bytes,
+            gt_file.name,
+            gt_file,
             "image/tiff",
         )
 
@@ -202,355 +83,486 @@ def run_prediction(
     return response.json()
 
 
+def display_result(result, model):
+    st.markdown(f"### {MODEL_INFO[model]['name']}")
+
+    if not result.get("success", False):
+        st.error("Prediction failed.")
+        return
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.image(
+            decode_base64_image(result["images"]["prediction_png"]),
+            caption="Predicted Building Mask",
+            use_container_width=True,
+        )
+
+    with col2:
+        st.image(
+            decode_base64_image(result["images"]["overlay_png"]),
+            caption="Prediction Overlay",
+            use_container_width=True,
+        )
+
+    with col3:
+        st.image(
+            decode_base64_image(result["images"]["probability_png"]),
+            caption="Prediction Probability",
+            use_container_width=True,
+        )
+
+    stats = result.get("metrics")
+
+    if stats:
+        cols = st.columns(4)
+
+        cols[0].metric(
+            "Dice",
+            f"{stats.get('dice', 0):.4f}",
+        )
+
+        cols[1].metric(
+            "IoU",
+            f"{stats.get('iou', 0):.4f}",
+        )
+
+        cols[2].metric(
+            "Precision",
+            f"{stats.get('precision', 0):.4f}",
+        )
+
+        cols[3].metric(
+            "Recall",
+            f"{stats.get('recall', 0):.4f}",
+        )
+
+
 # ============================================================
 # HEADER
 # ============================================================
 
 st.title("🏢 SpaceNet 6 Building Extraction")
 
-st.markdown(
-    """
-    **Multi-sensor building footprint extraction**
-
-    Compare SAR-only models, the optical teacher, and the
-    SAR student trained with optical knowledge distillation.
-    """
+st.caption(
+    "SAR-only building extraction with optical-guided knowledge distillation"
 )
-
-st.divider()
 
 
 # ============================================================
 # SIDEBAR
 # ============================================================
 
-with st.sidebar:
+st.sidebar.header("Mode")
 
-    st.header("Model Selection")
+mode = st.sidebar.radio(
+    "Select mode",
+    [
+        "Single Model Prediction",
+        "Research Comparison",
+    ],
+)
 
-    model = st.selectbox(
-        "Select Model",
-        options=["E1", "E2", "E3", "E4"],
+
+# ============================================================
+# SINGLE MODEL MODE
+# ============================================================
+
+if mode == "Single Model Prediction":
+
+    st.sidebar.header("Model")
+
+    model = st.sidebar.selectbox(
+        "Select model",
+        list(MODEL_INFO.keys()),
         format_func=lambda x: MODEL_INFO[x]["name"],
     )
 
-    selected_model = MODEL_INFO[model]
+    required_input = MODEL_INFO[model]["input"]
 
-    st.markdown("---")
-
-    st.write("**Modality:**", selected_model["modality"])
-
-    st.write("**Description:**")
-    st.caption(selected_model["description"])
-
-    st.markdown("---")
-
-    st.info(
-        "E4 uses SAR only during inference. "
-        "Optical imagery is used only during training "
-        "through knowledge distillation."
+    st.sidebar.markdown(
+        f"**Required input:** `{required_input}`"
     )
 
+    st.header(MODEL_INFO[model]["name"])
 
-# ============================================================
-# FILE UPLOAD
-# ============================================================
+    if required_input == "SAR":
 
-st.subheader("Input Data")
+        sar_file = st.file_uploader(
+            "Upload SAR GeoTIFF",
+            type=["tif", "tiff"],
+            key="single_sar",
+        )
 
-if selected_model["modality"] == "SAR":
-
-    sar_file = st.file_uploader(
-        "Upload SAR GeoTIFF",
-        type=["tif", "tiff"],
-        key="sar_upload",
-    )
-
-    optical_file = None
-
-else:
-
-    optical_file = st.file_uploader(
-        "Upload Optical GeoTIFF",
-        type=["tif", "tiff"],
-        key="optical_upload",
-    )
-
-    sar_file = None
-
-
-ground_truth_file = st.file_uploader(
-    "Ground Truth Mask (Optional)",
-    type=["tif", "tiff"],
-    key="gt_upload",
-)
-
-
-# ============================================================
-# PREVIEW
-# ============================================================
-
-if sar_file is not None or optical_file is not None:
-
-    st.subheader("Input Preview")
-
-    input_file = sar_file if sar_file is not None else optical_file
-
-    input_bytes = input_file.getvalue()
-
-    preview = create_input_preview(
-        input_bytes,
-        selected_model["modality"],
-    )
-
-    st.image(
-        preview,
-        caption=f"{selected_model['modality']} Input — Center 512×512",
-        width=512,
-    )
-
-
-if ground_truth_file is not None:
-
-    st.subheader("Ground Truth Preview")
-
-    gt_bytes_preview = ground_truth_file.getvalue()
-
-    gt_preview = create_mask_preview(gt_bytes_preview)
-
-    st.image(
-        gt_preview,
-        caption="Ground Truth Mask — Center 512×512",
-        width=512,
-    )
-
-
-# ============================================================
-# RUN BUTTON
-# ============================================================
-
-st.divider()
-
-run_button = st.button(
-    "🚀 RUN PREDICTION",
-    type="primary",
-    use_container_width=True,
-)
-
-
-# ============================================================
-# PREDICTION
-# ============================================================
-
-if run_button:
-
-    if selected_model["modality"] == "SAR" and sar_file is None:
-
-        st.error("Please upload a SAR GeoTIFF.")
-
-    elif selected_model["modality"] == "Optical" and optical_file is None:
-
-        st.error("Please upload an Optical GeoTIFF.")
+        optical_file = None
 
     else:
 
-        with st.spinner("Running model inference..."):
-
-            try:
-
-                sar_bytes = (
-                    sar_file.getvalue()
-                    if sar_file is not None
-                    else None
-                )
-
-                optical_bytes = (
-                    optical_file.getvalue()
-                    if optical_file is not None
-                    else None
-                )
-
-                gt_bytes = (
-                    ground_truth_file.getvalue()
-                    if ground_truth_file is not None
-                    else None
-                )
-
-                result = run_prediction(
-                    model=model,
-
-                    sar_bytes=sar_bytes,
-                    sar_name=(
-                        sar_file.name
-                        if sar_file is not None
-                        else None
-                    ),
-
-                    optical_bytes=optical_bytes,
-                    optical_name=(
-                        optical_file.name
-                        if optical_file is not None
-                        else None
-                    ),
-
-                    gt_bytes=gt_bytes,
-                    gt_name=(
-                        ground_truth_file.name
-                        if ground_truth_file is not None
-                        else None
-                    ),
-                )
-
-                st.session_state["prediction_result"] = result
-
-            except requests.exceptions.ConnectionError:
-
-                st.error(
-                    "Could not connect to FastAPI. "
-                    "Make sure the API is running on "
-                    "http://127.0.0.1:8000"
-                )
-
-            except Exception as e:
-
-                st.error(f"Prediction failed: {e}")
-
-
-# ============================================================
-# DISPLAY RESULT
-# ============================================================
-
-if "prediction_result" in st.session_state:
-
-    result = st.session_state["prediction_result"]
-
-    if result.get("success"):
-
-        st.divider()
-
-        st.subheader(
-            f"Prediction — {result['model_name']}"
+        optical_file = st.file_uploader(
+            "Upload Optical GeoTIFF",
+            type=["tif", "tiff"],
+            key="single_optical",
         )
 
-        # ----------------------------------------------------
-        # Images
-        # ----------------------------------------------------
+        sar_file = None
 
-        prediction_image = decode_image(
-            result["images"]["prediction_png"]
+    gt_file = st.file_uploader(
+        "Ground Truth Mask (optional)",
+        type=["tif", "tiff"],
+        key="single_gt",
+    )
+
+    if sar_file:
+
+        st.subheader("Input SAR")
+
+        st.info(
+            "SAR input detected. The API uses the same "
+            "preprocessing and 512×512 center-crop protocol "
+            "used for the official test evaluation."
         )
 
-        probability_image = decode_image(
-            result["images"]["probability_png"]
+    if optical_file:
+
+        st.subheader("Input Optical")
+
+        st.info(
+            "Optical input detected. The API uses the same "
+            "preprocessing and 512×512 center-crop protocol "
+            "used for the official test evaluation."
         )
 
-        overlay_image = decode_image(
-            result["images"]["overlay_png"]
-        )
+    run_prediction = st.button(
+        "🚀 Run Prediction",
+        type="primary",
+        use_container_width=True,
+    )
 
-        col1, col2, col3 = st.columns(3)
+    if run_prediction:
 
-        with col1:
+        if required_input == "SAR" and sar_file is None:
+            st.error("Please upload a SAR GeoTIFF.")
 
-            st.image(
-                prediction_image,
-                caption="Predicted Building Mask",
-                width="stretch",
-            )
-
-        with col2:
-
-            st.image(
-                overlay_image,
-                caption="Prediction Overlay",
-                width="stretch",
-            )
-
-        with col3:
-
-            st.image(
-                probability_image,
-                caption="Prediction Probability",
-                width="stretch",
-            )
-
-        # ----------------------------------------------------
-        # Prediction Statistics
-        # ----------------------------------------------------
-
-        st.divider()
-
-        st.subheader("Prediction Statistics")
-
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-
-            st.metric(
-                "Output Size",
-                f"{result['prediction']['height']} × "
-                f"{result['prediction']['width']}",
-            )
-
-        with col2:
-
-            st.metric(
-                "Building Pixels",
-                f"{result['prediction']['positive_pixels']:,}",
-            )
-
-        with col3:
-
-            st.metric(
-                "Building Area",
-                f"{result['prediction']['building_percentage']:.2f}%",
-            )
-
-        # ----------------------------------------------------
-        # Metrics
-        # ----------------------------------------------------
-
-        metrics = result.get("metrics")
-
-        if metrics is not None:
-
-            st.divider()
-
-            st.subheader("Ground Truth Metrics")
-
-            col1, col2, col3, col4 = st.columns(4)
-
-            with col1:
-                st.metric(
-                    "Dice",
-                    f"{metrics['dice']:.4f}",
-                )
-
-            with col2:
-                st.metric(
-                    "IoU",
-                    f"{metrics['iou']:.4f}",
-                )
-
-            with col3:
-                st.metric(
-                    "Precision",
-                    f"{metrics['precision']:.4f}",
-                )
-
-            with col4:
-                st.metric(
-                    "Recall",
-                    f"{metrics['recall']:.4f}",
-                )
+        elif required_input == "Optical" and optical_file is None:
+            st.error("Please upload an Optical GeoTIFF.")
 
         else:
 
-            st.info(
-                "Upload a ground-truth mask to calculate "
-                "Dice, IoU, Precision and Recall."
+            with st.spinner("Running model..."):
+
+                try:
+
+                    result = call_prediction(
+                        model=model,
+                        sar_file=sar_file,
+                        optical_file=optical_file,
+                        gt_file=gt_file,
+                    )
+
+                    st.success("Prediction completed.")
+
+                    display_result(result, model)
+
+                except Exception as e:
+
+                    st.error(
+                        f"Prediction failed: {str(e)}"
+                    )
+
+
+# ============================================================
+# RESEARCH COMPARISON MODE
+# ============================================================
+
+else:
+
+    st.header("🔬 Research Comparison")
+
+    st.markdown(
+        """
+        Compare **E1, E2, E3 and E4 on the same test tile**.
+
+        - **E1:** SAR U-Net
+        - **E2:** SAR ResNet34-U-Net
+        - **E3:** Optical Teacher
+        - **E4:** SAR + Optical Knowledge Distillation
+        """
+    )
+
+    st.divider()
+
+    st.subheader("1. Upload the Same Test Tile")
+
+    st.info(
+        "Upload the SAR, Optical and Ground Truth files "
+        "belonging to the same tile."
+    )
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+
+        sar_file = st.file_uploader(
+            "SAR GeoTIFF",
+            type=["tif", "tiff"],
+            key="comparison_sar",
+        )
+
+    with col2:
+
+        optical_file = st.file_uploader(
+            "Optical GeoTIFF",
+            type=["tif", "tiff"],
+            key="comparison_optical",
+        )
+
+    with col3:
+
+        gt_file = st.file_uploader(
+            "Ground Truth Mask",
+            type=["tif", "tiff"],
+            key="comparison_gt",
+        )
+
+    if sar_file and optical_file and gt_file:
+
+        st.success("All three inputs uploaded.")
+
+        st.divider()
+
+        st.subheader("2. Run All Models")
+
+        run_comparison = st.button(
+            "🚀 Run E1 + E2 + E3 + E4",
+            type="primary",
+            use_container_width=True,
+        )
+
+        if run_comparison:
+
+            results = {}
+
+            progress = st.progress(0)
+
+            models = ["E1", "E2", "E3", "E4"]
+
+            for i, model in enumerate(models):
+
+                with st.spinner(
+                    f"Running {MODEL_INFO[model]['name']}..."
+                ):
+
+                    try:
+
+                        result = call_prediction(
+                            model=model,
+                            sar_file=sar_file,
+                            optical_file=optical_file,
+                            gt_file=gt_file,
+                        )
+
+                        results[model] = result
+
+                    except Exception as e:
+
+                        st.error(
+                            f"{model} failed: {str(e)}"
+                        )
+
+                progress.progress(
+                    (i + 1) / len(models)
+                )
+
+            if len(results) == 4:
+
+                st.success(
+                    "All four models completed successfully."
+                )
+
+                st.session_state["comparison_results"] = results
+
+
+    # ========================================================
+    # DISPLAY COMPARISON
+    # ========================================================
+
+    if "comparison_results" in st.session_state:
+
+        results = st.session_state["comparison_results"]
+
+        st.divider()
+
+        st.subheader("3. Same-Tile Prediction Comparison")
+
+        # ----------------------------------------------------
+        # Ground truth
+        # ----------------------------------------------------
+
+        if "E2" in results:
+
+            st.markdown("### Ground Truth")
+
+            gt_prediction = results["E2"]
+
+            st.image(
+                decode_base64_image(
+                    gt_prediction["images"]["overlay_png"]
+                ),
+                caption="E2 Prediction Overlay",
+                width=512,
             )
 
-    else:
+        # ----------------------------------------------------
+        # E1 / E2 / E4
+        # ----------------------------------------------------
 
-        st.error("Prediction failed.")
+        st.markdown("### SAR Models")
+
+        sar_models = ["E1", "E2", "E4"]
+
+        cols = st.columns(3)
+
+        for col, model in zip(cols, sar_models):
+
+            with col:
+
+                result = results[model]
+
+                st.markdown(
+                    f"#### {MODEL_INFO[model]['name']}"
+                )
+
+                st.image(
+                    decode_base64_image(
+                        result["images"]["prediction_png"]
+                    ),
+                    caption="Building Mask",
+                    use_container_width=True,
+                )
+
+                metrics = result.get("metrics")
+
+                if metrics:
+
+                    st.metric(
+                        "Dice",
+                        f"{metrics.get('dice', 0):.4f}",
+                    )
+
+                    st.metric(
+                        "IoU",
+                        f"{metrics.get('iou', 0):.4f}",
+                    )
+
+        # ----------------------------------------------------
+        # E3
+        # ----------------------------------------------------
+
+        st.markdown("### Optical Teacher")
+
+        e3 = results["E3"]
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+
+            st.image(
+                decode_base64_image(
+                    e3["images"]["prediction_png"]
+                ),
+                caption="E3 Building Mask",
+                use_container_width=True,
+            )
+
+        with col2:
+
+            metrics = e3.get("metrics")
+
+            if metrics:
+
+                st.metric(
+                    "Dice",
+                    f"{metrics.get('dice', 0):.4f}",
+                )
+
+                st.metric(
+                    "IoU",
+                    f"{metrics.get('iou', 0):.4f}",
+                )
+
+                st.metric(
+                    "Precision",
+                    f"{metrics.get('precision', 0):.4f}",
+                )
+
+                st.metric(
+                    "Recall",
+                    f"{metrics.get('recall', 0):.4f}",
+                )
+
+        # ----------------------------------------------------
+        # Summary table
+        # ----------------------------------------------------
+
+        st.divider()
+
+        st.subheader("4. Quantitative Comparison")
+
+        table_data = []
+
+        for model in ["E1", "E2", "E3", "E4"]:
+
+            metrics = results[model].get("metrics")
+
+            if metrics:
+
+                table_data.append(
+                    {
+                        "Model": model,
+                        "Dice": metrics.get("dice", 0),
+                        "IoU": metrics.get("iou", 0),
+                        "Precision": metrics.get(
+                            "precision", 0
+                        ),
+                        "Recall": metrics.get(
+                            "recall", 0
+                        ),
+                    }
+                )
+
+        if table_data:
+
+            st.dataframe(
+                table_data,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        # ----------------------------------------------------
+        # Research interpretation
+        # ----------------------------------------------------
+
+        st.divider()
+
+        st.subheader("5. Experiment Progression")
+
+        st.markdown(
+            """
+            **E1 → E2**
+
+            Architectural improvement from a plain U-Net
+            to a ResNet34 encoder-decoder.
+
+            **E2 → E3**
+
+            Demonstrates the upper-bound benefit of having
+            optical imagery available directly during inference.
+
+            **E2 → E4**
+
+            Tests whether optical information transferred
+            during training through knowledge distillation
+            can improve SAR-only inference.
+            """
+        )
